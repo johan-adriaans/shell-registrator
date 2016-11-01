@@ -1,0 +1,114 @@
+#!/bin/bash
+
+HOSTNAME=$(hostname)
+BASE_PATH=services
+
+# Set the docker API version used by the cluster
+export DOCKER_API_VERSION=1.22
+
+# Register a new container in etcd
+function container_register {
+  CONTAINER_ID=$1
+  CONTAINER_NAME=$(docker -H "$DOCKER_HOST" inspect -f '{{.Name}}' "$CONTAINER_ID" | tr -d '/')
+  IP_ADDRESS=$(docker -H "$DOCKER_HOST" inspect -f '{{.NetworkSettings.IPAddress}}' "$CONTAINER_ID")
+  # No address set, must be in host mode, get local ip address and set that
+  if [ -z "$IP_ADDRESS" ]; then IP_ADDRESS=$(hostname -i); fi
+  IMAGE=$(docker -H "$DOCKER_HOST" inspect -f '{{.Config.Image}}' "$CONTAINER_ID")
+  ENV_VARS=$(docker -H "$DOCKER_HOST" inspect -f '{{range $v := .Config.Env}}{{println $v}}{{end}}' "$CONTAINER_ID" | grep '^SERVICE_')
+  DOMAINS=$(docker -H "$DOCKER_HOST" inspect -f '{{range $v := .Config.Env}}{{println $v}}{{end}}' "$CONTAINER_ID" | grep '^DOMAINS='  | cut -d'=' -f2)
+  DATABASES=$(docker -H "$DOCKER_HOST" inspect -f '{{range $v := .Config.Env}}{{println $v}}{{end}}' "$CONTAINER_ID" | grep '^DATABASES='  | cut -d'=' -f2)
+  PREFIX=$CONTAINER_NAME
+  UPSTREAM_PREFIX=$PREFIX/$HOSTNAME/${CONTAINER_ID:0:12}
+
+  curl -sL -X PUT "http://$ETCD_HOST/v2/keys/$BASE_PATH/$UPSTREAM_PREFIX/image" -d "value=$IMAGE"
+  if [ ! -z "$DATABASES" ]; then
+    curl -sL -X PUT "http://$ETCD_HOST/v2/keys/$BASE_PATH/$CONTAINER_NAME/databases" -d "value=$DATABASES"
+  fi
+  if [ ! -z "$DOMAINS" ]; then
+    curl -sL -X PUT "http://$ETCD_HOST/v2/keys/$BASE_PATH/$CONTAINER_NAME/domains" -d "value=$DOMAINS"
+  fi
+  if [ ! -z "$IP_ADDRESS" ]; then
+    curl -sL -X PUT "http://$ETCD_HOST/v2/keys/$BASE_PATH/$UPSTREAM_PREFIX/ip-address" -d "value=$IP_ADDRESS"
+
+    # This first command returns ip:port, the second just the port number. This port number will be combined with the internal ip and can be used for internal communications
+    PORTS=$(docker -H "$DOCKER_HOST" inspect -f '{{range $k, $v := .NetworkSettings.Ports}}{{println $v}}{{end}}' "${CONTAINER_ID:0:12}" | sed 's/[^0-9\. ]*//g' | sed 's/ /:/' | sed '/^$/d')
+    if [ ! -z "$PORTS" ]; then
+      for PORT in $PORTS; do
+        curl -sL -X PUT "http://$ETCD_HOST/v2/keys/$BASE_PATH/$UPSTREAM_PREFIX/upstreams/$(echo "$PORT" | cut -d':' -f2)" -d "value=$PORT"
+      done
+    else
+      PORTS=$(docker -H "$DOCKER_HOST" inspect -f '{{range $k, $v := .NetworkSettings.Ports}}{{println $k}}{{end}}' "${CONTAINER_ID:0:12}" | sed 's/[^0-9\. ]*//g' | sed 's/ /:/' | sed '/^$/d')
+      for PORT in $PORTS; do
+        curl -sL -X PUT "http://$ETCD_HOST/v2/keys/$BASE_PATH/$UPSTREAM_PREFIX/upstreams/$PORT" -d "value=$IP_ADDRESS:$PORT"
+      done
+    fi
+  fi
+  for PAIR in $ENV_VARS; do
+    IFS='=' read -ra ARRAY <<< "$PAIR"
+    curl -sL -X PUT "http://$ETCD_HOST/v2/keys/$BASE_PATH/$UPSTREAM_PREFIX/${ARRAY[0]}" -d "value=${ARRAY[1]}"
+  done
+}
+
+# Remove container data from etcd
+function container_remove {
+  CONTAINER_ID=$1
+  CONTAINER_PATH=$(dirname "$(curl -sL "http://$ETCD_HOST/v2/keys/$BASE_PATH?recursive=true" | grep -o "[^\"]*/${HOSTNAME}/${CONTAINER_ID:0:12}/image")")
+  if [[ ! -z $CONTAINER_PATH ]]; then
+    # Delete the image first so etcdctl watch has something to see
+    curl -sL -X DELETE "http://$ETCD_HOST/v2/keys$CONTAINER_PATH/image"
+    curl -sL -X DELETE "http://$ETCD_HOST/v2/keys$CONTAINER_PATH?recursive=true"
+    curl -sL -X DELETE "http://$ETCD_HOST/v2/keys$(dirname "$CONTAINER_PATH")?dir=true"
+    # If no more subdirectories are found, delete domains and database keys so we can purge the container instance
+    if [ "1" -eq "$(curl -sL "http://$ETCD_HOST/v2/keys$(dirname "$(dirname "$CONTAINER_PATH")")" | grep -oc '"dir":true')" ]; then
+      curl -sL -X DELETE "http://$ETCD_HOST/v2/keys$(dirname "$(dirname "$CONTAINER_PATH")")/domains"
+      curl -sL -X DELETE "http://$ETCD_HOST/v2/keys$(dirname "$(dirname "$CONTAINER_PATH")")/databases"
+    fi
+    curl -sL -X DELETE "http://$ETCD_HOST/v2/keys$(dirname "$(dirname "$CONTAINER_PATH")")?dir=true"
+  fi
+}
+
+
+INITIALIZED=0
+
+# Listen to docker events
+echo "Starting listening loop"
+while read -r line ; do
+  if [ "$INITIALIZED" -eq "0" ]; then
+    # Detect registered containers
+    echo "Detect running containers"
+    REGISTERED_AT_START=()
+    for id in $(curl -sL "http://$ETCD_HOST/v2/keys/$BASE_PATH?recursive=true" | grep -o "/${HOSTNAME}/[a-f0-9]\{12\}/image" | cut -d'/' -f3); do REGISTERED_AT_START+=($id); done
+
+    # Update / register existing containers
+    RUNNING_AT_START=()
+
+    while read -r CONTAINER_ID ; do
+      echo "RUNNING CONTAINER DETECTED - Container: $CONTAINER_ID"
+      RUNNING_AT_START+=(${CONTAINER_ID:0:12})
+      container_register "$CONTAINER_ID"
+    done < <(docker -H "$DOCKER_HOST" ps --no-trunc -q)
+
+    # Remove stale data
+    echo "Detect stale containers"
+    for id in "${REGISTERED_AT_START[@]}"; do
+      if [[ ! ${RUNNING_AT_START[@]} =~ ${id} ]]; then
+        echo "STALE DATA DETECTED, REMOVING - Container: $id"
+        container_remove "$id"
+      fi
+    done
+    INITIALIZED=1
+  fi
+
+  #echo "Processing $line"
+  CONTAINER_ID=$(echo "$line" | grep -o '[a-f0-9]\{64\}')
+  CONTAINER_EVENT=$(echo "$line" | awk '{print $NF}')
+  if [[ ! -z $CONTAINER_ID ]]; then
+    if [ "$CONTAINER_EVENT" = "start" ]; then
+      echo "START DETECTED - Container: $CONTAINER_ID - Event: $CONTAINER_EVENT"
+      container_register "$CONTAINER_ID"
+    elif [ "$CONTAINER_EVENT" = "die" ]; then
+      echo "STOP DETECTED - Container: $CONTAINER_ID - Event: $CONTAINER_EVENT"
+      container_remove "$CONTAINER_ID"
+    fi
+  fi
+done < <(echo "Initial line, needed for initialization" && docker -H "$DOCKER_HOST" events )

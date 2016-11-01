@@ -5,11 +5,11 @@ Small and lightweight registrator for docker containers in a CoreOS cluster. Reg
 /services/[container-name]/[machine-name]/[container-id]/[key]
 
 Where key can be:
-image: The used docker image
-ip-address: The continer ip address
-upstreams: Contains a lis of all exposed ports, the value of /1080 in the list below is 10.0.0.10:1080
-databases: The value of the DATABASES environment variable. (Set by adding -e variables to you docker run command)
-SERVICE\_[STRING]: Any docker environment variable that starts with SERVICE\_ will be published in etcd.
+- image: The used docker image
+- ip-address: The continer ip address
+- upstreams: Contains a lis of all exposed ports, the value of /1080 in the list below is 10.0.0.10:1080
+- databases: The value of the DATABASES environment variable. (Set by adding -e variables to you docker run command)
+- SERVICE\_[STRING]: Any docker environment variable that starts with SERVICE\_ will be published in etcd.
 
 ```
 $ etcdctl ls /services/webserver --recursive

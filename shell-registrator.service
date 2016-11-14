@@ -19,7 +19,7 @@ ExecStart=/usr/bin/docker run --rm --name shell-registrator \
   johanadriaans/shell-registrator
 ExecStop=/usr/bin/docker stop shell-registrator
 # Clean up any etcd folders for this host
-ExecStopPost=/bin/sh -c 'for line in $(etcdctl ls services --recursive | grep -E "$(hostname)$"); do etcdctl rm "$line" --recursive; done'
+ExecStopPost=/bin/sh -c 'for line in $(etcdctl ls services --recursive | grep -E "$(hostname)$"); do etcdctl rm "$line" --recursive && etcdctl rmdir "$(dirname "$line")"; done'
 
 [X-Fleet]
 Global=true

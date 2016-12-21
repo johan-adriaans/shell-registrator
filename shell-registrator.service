@@ -14,8 +14,6 @@ ExecStartPre=-/usr/bin/docker rm shell-registrator
 ExecStartPre=/usr/bin/docker pull johanadriaans/shell-registrator
 ExecStart=/usr/bin/docker run --rm --name shell-registrator \
   --net="host" \
-# Set your machine ip here if needed
-# -e MACHINE_IP=10.0.0.x \
   -v /run/docker.sock:/tmp/docker.sock:ro \
   --log-opt max-size=50m \
   johanadriaans/shell-registrator

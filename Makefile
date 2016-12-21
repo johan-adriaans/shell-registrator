@@ -7,7 +7,7 @@ CONTAINER_NAME = johanadriaans/shell-registrator
 
 # name of instance and other options you want to pass to docker run for testing
 INSTANCE_NAME = shell-registrator
-RUN_OPTS =--net="host" -e ETCD_NODE=127.0.0.1:2379 -v /run/docker.sock:/tmp/docker.sock:ro
+RUN_OPTS =--net="host" -e MACHINE_IP=127.0.0.1 -e ETCD_NODE=127.0.0.1:2379 -v /run/docker.sock:/tmp/docker.sock:ro
 
 #-----------------------------------------------------------------------------
 # default target

@@ -3,6 +3,9 @@
 HOSTNAME=$(hostname)
 BASE_PATH=services
 
+# If no machine ip was given, guess internal ip is on eth1
+if [ -z "$MACHINE_IP" ]; then MACHINE_IP="$(ip addr show eth1 | sed -n -r 's@.*inet (.*)/.*brd.*@\1@p')"; fi
+
 # Set the docker API version used by the cluster
 export DOCKER_API_VERSION=1.22
 
@@ -12,7 +15,7 @@ function container_register {
   CONTAINER_NAME=$(docker -H "$DOCKER_HOST" inspect -f '{{.Name}}' "$CONTAINER_ID" | tr -d '/')
   IP_ADDRESS=$(docker -H "$DOCKER_HOST" inspect -f '{{.NetworkSettings.IPAddress}}' "$CONTAINER_ID")
   # No address set, must be in host mode, get local ip address and set that
-  if [ -z "$IP_ADDRESS" ]; then IP_ADDRESS=$(hostname -i); fi
+  if [ -z "$IP_ADDRESS" ]; then IP_ADDRESS="$MACHINE_IP"; fi
   IMAGE=$(docker -H "$DOCKER_HOST" inspect -f '{{.Config.Image}}' "$CONTAINER_ID")
   ENV_VARS=$(docker -H "$DOCKER_HOST" inspect -f '{{range $v := .Config.Env}}{{println $v}}{{end}}' "$CONTAINER_ID" | grep '^SERVICE_')
   DOMAINS=$(docker -H "$DOCKER_HOST" inspect -f '{{range $v := .Config.Env}}{{println $v}}{{end}}' "$CONTAINER_ID" | grep '^DOMAINS='  | cut -d'=' -f2)
